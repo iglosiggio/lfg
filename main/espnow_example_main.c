@@ -42,17 +42,21 @@ static QueueHandle_t s_example_espnow_queue = NULL;
 static uint8_t broadcast_mac[ESP_NOW_ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 static uint16_t s_example_espnow_seq = 0;
 
+#define BEACON_PERIOD 250
 #define MAX_PEERS 32
 #define MAX_PEER_NAME 22
+#define RSSI_BUF_SIZE (3000 / BEACON_PERIOD)
 struct known_peer {
     uint8_t addr[ESP_NOW_ETH_ALEN];
     char name[MAX_PEER_NAME];
-    int8_t rssi;
+    int8_t rssi[RSSI_BUF_SIZE];
+    uint8_t rssi_i;
     TickType_t last_seen;
 } peers[MAX_PEERS];
-#define PEER_SILENCE_CUTOFF (10000 / portTICK_PERIOD_MS)
+#define PEER_SILENCE_CUTOFF (3000 / portTICK_PERIOD_MS)
 
 char own_name[MAX_PEER_NAME] = "NEW!!";
+unsigned peer_list_start = 0;
 
 static void peer_update(uint8_t peer[ESP_NOW_ETH_ALEN], int8_t rssi, char name[MAX_PEER_NAME])
 {
@@ -62,14 +66,17 @@ static void peer_update(uint8_t peer[ESP_NOW_ETH_ALEN], int8_t rssi, char name[M
     for (peer_id = 0; peer_id < MAX_PEERS; peer_id++)
         if (memcmp(peers[peer_id].addr, peer, ESP_NOW_ETH_ALEN) == 0) goto found;
     for (peer_id = 0; peer_id < MAX_PEERS; peer_id++)
-        if (PEER_SILENCE_CUTOFF <= current_tick - peers[peer_id].last_seen) break;
+        if (!peers[peer_id].last_seen || PEER_SILENCE_CUTOFF <= current_tick - peers[peer_id].last_seen) break;
     if (peer_id == MAX_PEERS) return;
 
     memcpy(peers[peer_id].addr, peer, ESP_NOW_ETH_ALEN);
+    for (int i = 0; i < RSSI_BUF_SIZE; i++) peers[peer_id].rssi[i] = rssi;
 found:
     memcpy(peers[peer_id].name, name, MAX_PEER_NAME);
-    peers[peer_id].rssi = rssi;
-    peers[peer_id].last_seen = xTaskGetTickCount();
+    peers[peer_id].last_seen = current_tick;
+
+    peers[peer_id].rssi[peers[peer_id].rssi_i++] = rssi;
+    peers[peer_id].rssi_i %= RSSI_BUF_SIZE;
 }
 
 static void example_espnow_deinit(example_espnow_send_param_t *send_param);
@@ -194,7 +201,6 @@ static void example_espnow_task(void *pvParameter)
     uint16_t recv_seq = 0;
     int ret;
 
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
     ESP_LOGI(TAG, "Start sending broadcast data");
 
     /* Start sending broadcast ESPNOW data. */
@@ -212,9 +218,7 @@ static void example_espnow_task(void *pvParameter)
                 example_espnow_event_send_cb_t *send_cb = &evt.info.send_cb;
 
                 /* Delay a while before sending the next data. */
-                if (send_param->delay > 0) {
-                    vTaskDelay(send_param->delay/portTICK_PERIOD_MS);
-                }
+                vTaskDelay(BEACON_PERIOD/portTICK_PERIOD_MS);
 
                 ESP_LOGI(TAG, "send data to "MACSTR"", MAC2STR(send_cb->mac_addr));
 
@@ -258,6 +262,11 @@ static void example_espnow_task(void *pvParameter)
                     }
 
                     peer_update(recv_cb->mac_addr, recv_cb->rssi, name);
+                    //peer_update((uint8_t[]){0x00,0x00,0x00,0x00,0x00,0x00}, -9, (char[MAX_PEER_NAME]){"Yo no"});
+                    //peer_update((uint8_t[]){0xFF,0xFF,0xFF,0xFF,0xFF,0xFF}, -60, (char[MAX_PEER_NAME]){"Yo si"});
+                    //peer_update((uint8_t[]){0xAA,0xAA,0xAA,0xAA,0xAA,0xAA}, -100, (char[MAX_PEER_NAME]){"Yo maso"});
+                    //peer_update((uint8_t[]){0xBB,0xBB,0xBB,0xBB,0xBB,0xBB}, -5, (char[MAX_PEER_NAME]){"Ni loco"});
+                    //peer_update((uint8_t[]){0xCC,0xCC,0xCC,0xCC,0xCC,0xCC}, -5, (char[MAX_PEER_NAME]){"Yo faso"});
                 }
                 else {
                     ESP_LOGI(TAG, "Receive error data from: "MACSTR"", MAC2STR(recv_cb->mac_addr));
@@ -319,7 +328,6 @@ static esp_err_t example_espnow_init(void)
         return ESP_FAIL;
     }
     memset(send_param, 0, sizeof(example_espnow_send_param_t));
-    send_param->delay = CONFIG_ESPNOW_SEND_DELAY;
     send_param->buffer = malloc(sizeof(example_espnow_data_t));
     if (send_param->buffer == NULL) {
         ESP_LOGE(TAG, "Malloc send buffer fail");
@@ -345,10 +353,28 @@ static void example_espnow_deinit(example_espnow_send_param_t *send_param)
     esp_now_deinit();
 }
 
+static unsigned sqrti(int v) {
+    int low = 0;
+    int high = v / 2;
+    while (low < high) {
+        int mid = low + (high - low) / 2;
+        if (mid * mid == v) return mid;
+        else if (mid * mid < v) low = mid + 1;
+        else high = mid - 1;
+    }
+
+    int high_dist = v - (low + 1) * (low + 1);
+    int mid_dist = v - low * low;
+    int low_dist = v - (low - 1) * (low - 1);
+    if (high_dist < 0) high_dist = -high_dist;
+    if (mid_dist < 0) mid_dist = -mid_dist;
+    if (low_dist < 0) low_dist = -low_dist;
+    return low - (low_dist < mid_dist) + (high_dist < mid_dist);
+}
 
 static void example_display_task(void *ignored)
 {
-    const TickType_t xDelay = 500 / portTICK_PERIOD_MS;
+    const TickType_t xDelay = 100 / portTICK_PERIOD_MS;
 
 
     int frame = 0;
@@ -356,19 +382,34 @@ static void example_display_task(void *ignored)
     {
         TickType_t current_tick = xTaskGetTickCount();
         char text[32];
+        int line = 0;
 
         display_clear();
+
         snprintf(text, sizeof text, "Yo: %s", own_name);
-        display_text(10, 0, text, false);
-        for (int i = 0; i < MAX_PEERS; i++)
+        display_text(10, line * 10 + 1, text, false);
+        line++;
+
+        for (int i = peer_list_start; i < MAX_PEERS; i++)
         {
-            if (!peers[i].last_seen) continue;
-            if (PEER_SILENCE_CUTOFF <= current_tick - peers[i].last_seen) continue;
-            snprintf(text, sizeof text, "%d) %s", i, peers[i].name);
-            display_text(10, (i+1) * 9, text, false);
-            int written = snprintf(text, sizeof text, "%2d", peers[i].rssi);
-            written = sizeof text < written ? sizeof text : written;
-            display_text(128 - written * 6, (i+1) * 9 + 9, text, false);
+            if (!peers[i].last_seen || PEER_SILENCE_CUTOFF <= current_tick - peers[i].last_seen) {
+                continue;
+            }
+            snprintf(text, sizeof text, "%s", peers[i].name);
+            display_text(0, line * 10 + 1, text, false);
+
+            int rssi = 0;
+            for (int j = 0; j < RSSI_BUF_SIZE; j++) {
+                int rssi_i = (peers[i].rssi_i + j) % RSSI_BUF_SIZE;
+                rssi += (j + 1) * peers[i].rssi[rssi_i];
+            }
+            rssi /= RSSI_BUF_SIZE * (RSSI_BUF_SIZE + 1) / 2;
+            int w = 128 + rssi;
+            if (128 <= w) w = 128;
+            for (int y = 0; y < 10; y++)
+                for (int x = 128 - w; x < 128; x++)
+                    display_toggle_pixel(x, line * 10 + y);
+            line++;
         }
 
         uint8_t glyphs[][5] = {
@@ -443,7 +484,32 @@ static void example_display_task(void *ignored)
                 0b00000000,
             },
         };
-        draw_glyph(123, 0, glyphs[frame % 10], true);
+        draw_glyph(0, 0, glyphs[frame++ % 10], true);
+
+        int wave_distance_table[] = {
+          26, 28, 31, 33, 35, 36, 37, 37, 37, 36, 34, 32,
+          30, 27, 25, 22, 20, 19, 17, 16, 16, 16, 17, 18,
+          20, 21, 23, 25, 26, 28, 29, 30, 31, 31, 31, 30,
+          30, 29, 28, 27, 26, 26, 25, 25, 25, 25, 25, 25,
+          26, 26, 26, 26, 26, 26, 26, 25, 25, 24, 23, 22,
+          21, 21, 20, 20, 20, 21, 22, 23, 25, 26, 28, 30,
+          31, 33, 34, 35, 35, 35, 34, 32, 31, 29, 26, 24,
+          21, 19, 17, 15, 14, 14, 14, 15, 16, 18, 20, 23
+        };
+        int wave_distance = wave_distance_table[frame % (sizeof wave_distance_table / sizeof *wave_distance_table)];
+
+        for (int y = line * 10; y < 64; y++) {
+            for (int x = 0; x < 128; x++) {
+                int virtual_x = x + 32;
+                int virtual_y = y + peer_list_start * 10;
+                int d = sqrti(virtual_x * virtual_x + virtual_y * virtual_y) + virtual_x / virtual_y;
+
+                d = (d % wave_distance) / 2;
+                if (!d) d = 1;
+                if (virtual_x % d == 0 && virtual_y % d == 0) display_toggle_pixel(x, y);
+            }
+        }
+
         display_flush();
         vTaskDelay(xDelay);
     }
@@ -469,6 +535,16 @@ static void example_buttons_task(void* ignored)
             case BTN_KEY2: strcpy(own_name, "Codenames (Pict)"); break;
             case BTN_KEY3: strcpy(own_name, "Codenames (Word)"); break;
             case BTN_KEY4: strcpy(own_name, "The Mind"); break;
+            case BTN_DOWN:
+            case BTN_RIGHT:
+                if (!(buttons_pressed(BTN_RIGHT) && buttons_pressed(BTN_DOWN))) break;
+                if (0 < peer_list_start) peer_list_start--;
+                break;
+            case BTN_UP:
+            case BTN_LEFT:
+                if (!(buttons_pressed(BTN_LEFT) && buttons_pressed(BTN_UP))) break;
+                if (peer_list_start < MAX_PEERS) peer_list_start++;
+                break;
             default: break;
         }
     }

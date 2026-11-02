@@ -146,6 +146,11 @@ uint32_t buttons_read(void)
     return s_state;
 }
 
+bool buttons_pressed(button_id_t id)
+{
+    return id < BTN_COUNT && (s_state & (1 << id)) == (1 << id);
+}
+
 const char *buttons_name(button_id_t id)
 {
     return id < BTN_COUNT ? s_buttons[id].name : "?";

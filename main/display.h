@@ -11,6 +11,7 @@ esp_err_t display_init(void);
 void display_clear(void);
 
 void display_set_pixel(int x, int y, bool on);
+void display_toggle_pixel(int x, int y);
 void display_fill_rect(int x, int y, int w, int h, bool on);
 void display_draw_rect(int x, int y, int w, int h);
 

@@ -67,7 +67,6 @@ typedef struct {
 
 /* Parameters of sending ESPNOW data. */
 typedef struct {
-    uint16_t delay;                       //Delay between sending two ESPNOW data, unit: ms.
     uint8_t *buffer;                      //Buffer pointing to ESPNOW data.
 } example_espnow_send_param_t;
 

@@ -207,6 +207,15 @@ void display_set_pixel(int x, int y, bool on)
     }
 }
 
+void display_toggle_pixel(int x, int y)
+{
+    if (x < 0 || x >= BOARD_LCD_WIDTH || y < 0 || y >= BOARD_LCD_HEIGHT) {
+        return;
+    }
+    uint8_t *p = &s_fb[x + (y / 8) * BOARD_LCD_WIDTH];
+    *p ^= (1u << (y % 8));
+}
+
 void display_fill_rect(int x, int y, int w, int h, bool on)
 {
     for (int j = 0; j < h; j++) {

@@ -31,4 +31,6 @@ QueueHandle_t buttons_event_queue(void);
 
 uint32_t buttons_read(void);
 
+bool buttons_pressed(button_id_t id);
+
 const char *buttons_name(button_id_t id);
